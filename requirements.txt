@@ -2,3 +2,4 @@ numpy
 scipy
 PyQt6
 sounddevice
+matplotlib
