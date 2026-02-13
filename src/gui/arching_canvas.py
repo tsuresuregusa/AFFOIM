@@ -1,43 +1,26 @@
-from PyQt6.QtWidgets import QGraphicsView, QGraphicsScene, QGraphicsPathItem
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QPainter, QPen, QBrush, QColor, QPainterPath
+from PyQt6.QtWidgets import QGraphicsView, QGraphicsScene, QGraphicsPathItem, QFileDialog
+from PyQt6.QtCore import Qt, pyqtSignal, QRectF
+from PyQt6.QtGui import QPainter, QPen, QBrush, QColor, QPainterPath, QPixmap
 from .canvas import ControlPoint
 import numpy as np
 from scipy.interpolate import make_interp_spline
 
 class ArchingCanvas(QGraphicsView):
-    geometryChanged = pyqtSignal(list) # Emits list of points (placeholder)
+    geometryChanged = pyqtSignal(list)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.scene = QGraphicsScene(self)
         self.setScene(self.scene)
-        self.setScene(self.scene)
         self.setRenderHint(QPainter.RenderHint.Antialiasing)
-        self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag) # Enable Panning
+        self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
+        self.scene.setSceneRect(0, 0, 800, 400)
         
-        # Enforce Aspect Ratio 1:2 (Vertical)
-        self.scene.setSceneRect(0, 0, 600, 600) # Arching might need different ratio? 
-        # User said "images should be trimmed at an aspect ratio relevant to the violin".
-        # Arching is side view, so length is same (800), height is less (e.g. 200).
-        # But we are drawing it in a square-ish view?
-        # Let's stick to a reasonable rect.
-        self.scene.setSceneRect(0, 0, 600, 600)
-        
-        # Top Arch (Blue) - Vertical orientation
         self.top_points = []
-        # Back Arch (Orange) - Vertical orientation
         self.back_points = []
         
-        # Initialize points (Vertical)
-        # Top Arch: x ~ 200, y varies 50-550
-        top_data = [
-            (200, 50), (150, 150), (140, 300), (150, 450), (200, 550)
-        ]
-        # Back Arch: x ~ 400, y varies 50-550
-        back_data = [
-            (400, 50), (450, 150), (460, 300), (450, 450), (400, 550)
-        ]
+        self.top_template = [(0,0),(0.05,0.2),(0.15,0.65),(0.5,1),(0.85,0.65),(0.95,0.2),(1,0)]
+        self.back_template = [(0,0),(0.05,0.25),(0.15,0.7),(0.5,1),(0.85,0.7),(0.95,0.25),(1,0)]
         
         self.top_path = QGraphicsPathItem()
         self.top_path.setPen(QPen(QColor("blue"), 2))
@@ -47,116 +30,83 @@ class ArchingCanvas(QGraphicsView):
         self.back_path.setPen(QPen(QColor("orange"), 2))
         self.scene.addItem(self.back_path)
         
-        for x, y in top_data:
-            cp = ControlPoint(x, y, color="blue")
+        self.background_item = None
+        self.current_zoom = 1.0
+        self.reset_points_to_rect(self.scene.sceneRect())
+        self.scene.update_geometry = self.update_geometry
+        self.update_geometry()
+        self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
+
+    def reset_points_to_rect(self, rect):
+        for p in self.top_points + self.back_points: self.scene.removeItem(p)
+        self.top_points.clear(); self.back_points.clear()
+        
+        cx, top, h, w = rect.center().x(), rect.top(), rect.height(), rect.width()
+        # Arch depth proportional to the smaller of w or h (usually w in side view images)
+        arch_depth = min(w, h) * 0.15
+        
+        for u, v in self.top_template:
+            px = cx - 10 - (v * arch_depth)
+            py = top + (u * h)
+            cp = ControlPoint(px, py, color="blue")
             self.scene.addItem(cp)
             self.top_points.append(cp)
             
-        for x, y in back_data:
-            cp = ControlPoint(x, y, color="orange")
+        for u, v in self.back_template:
+            px = cx + 10 + (v * arch_depth)
+            py = top + (u * h)
+            cp = ControlPoint(px, py, color="orange")
             self.scene.addItem(cp)
             self.back_points.append(cp)
-
-        # Monkey patch scene
-        self.scene.update_geometry = self.update_geometry
         self.update_geometry()
-        
-        self.background_item = None
-        
-        # Zoom state
-        self.current_zoom = 1.0
 
-    def wheelEvent(self, event):
-        zoom_in_factor = 1.15
-        zoom_out_factor = 1 / zoom_in_factor
+    def update_geometry(self):
+        def draw_spline(pts, path_item):
+            if len(pts) < 3: return
+            x = np.array([p.pos().x() for p in pts]); y = np.array([p.pos().y() for p in pts])
+            s = np.linspace(0, 1, len(pts))
+            try:
+                sx = make_interp_spline(s, x, k=3); sy = make_interp_spline(s, y, k=3)
+                sf = np.linspace(0, 1, 100)
+                path = QPainterPath(); path.moveTo(sx(0), sy(0))
+                for t in sf[1:]: path.lineTo(sx(t), sy(t))
+                path_item.setPath(path)
+            except: pass
+        draw_spline(self.top_points, self.top_path)
+        draw_spline(self.back_points, self.back_path)
+        self.geometryChanged.emit([])
 
-        # Calculate proposed zoom
-        if event.angleDelta().y() > 0:
-            zoom_factor = zoom_in_factor
-        else:
-            zoom_factor = zoom_out_factor
+    def load_background(self, file_path=None):
+        if not file_path:
+            file_name, _ = QFileDialog.getOpenFileName(self, "Open Side", "", "Images (*.png *.jpg *.bmp)")
+        else: file_name = file_path
             
-        new_zoom = self.current_zoom * zoom_factor
-        
-        # Clamp zoom (1.0 to 3.0)
-        if new_zoom < 1.0:
-            zoom_factor = 1.0 / self.current_zoom
-            new_zoom = 1.0
-        elif new_zoom > 3.0:
-            zoom_factor = 3.0 / self.current_zoom
-            new_zoom = 3.0
-            
-        if abs(zoom_factor - 1.0) < 0.001:
-            return
-
-        self.current_zoom = new_zoom
-
-        # Save the scene pos
-        old_pos = self.mapToScene(event.position().toPoint())
-
-        # Zoom
-        self.scale(zoom_factor, zoom_factor)
-
-        # Get the new position
-        new_pos = self.mapToScene(event.position().toPoint())
-
-        # Move scene to old position
-        delta = new_pos - old_pos
-        self.translate(delta.x(), delta.y())
-
-    def load_background(self):
-        from PyQt6.QtWidgets import QFileDialog
-        from PyQt6.QtGui import QPixmap
-        
-        file_name, _ = QFileDialog.getOpenFileName(self, "Open Arching Image", "", "Image Files (*.png *.jpg *.bmp)")
         if file_name:
             try:
                 pixmap = QPixmap(file_name)
-                if pixmap.isNull():
-                    return
-
-                if self.background_item:
-                    self.scene.removeItem(self.background_item)
-                
+                if pixmap.isNull(): return
+                if self.background_item: self.scene.removeItem(self.background_item)
                 self.background_item = self.scene.addPixmap(pixmap)
-                self.background_item.setZValue(-1)
-                self.background_item.setOpacity(0.5)
+                self.background_item.setZValue(-1); self.background_item.setOpacity(0.5)
+                sr = self.scene.sceneRect()
+                scale = min(sr.width()/pixmap.width(), sr.height()/pixmap.height()) * 0.95
+                self.background_item.setScale(scale)
+                iw, ih = pixmap.width()*scale, pixmap.height()*scale
+                ix, iy = sr.center().x() - iw/2, sr.center().y() - ih/2
+                self.background_item.setPos(ix, iy)
                 
-                # Scale logic (similar to Canvas but simplified)
-                self.background_item.setScale(0.5) # Default scale
-                
-            except Exception as e:
-                print(f"Error loading arching background: {e}")
+                from ..core.vision import VisionProcessor
+                detection = VisionProcessor.detect_violin_body(file_name, view_type='side')
+                if detection:
+                    dx, dy, dw, dh = detection
+                    self.reset_points_to_rect(QRectF(ix + dx*scale, iy + dy*scale, dw*scale, dh*scale))
+                else: self.reset_points_to_rect(QRectF(ix, iy, iw, ih))
+            except: pass
 
-    def set_background_opacity(self, opacity: float):
-        if self.background_item:
-            self.background_item.setOpacity(opacity)
+    def set_background_opacity(self, opacity):
+        if self.background_item: self.background_item.setOpacity(opacity)
 
-    def update_geometry(self):
-        def draw_spline(points, path_item):
-            if len(points) < 3: return
-            
-            x = np.array([p.pos().x() for p in points])
-            y = np.array([p.pos().y() for p in points])
-            
-            # Parameterize
-            dx = np.diff(x)
-            dy = np.diff(y)
-            ds = np.sqrt(dx**2 + dy**2)
-            s = np.concatenate(([0], np.cumsum(ds)))
-            
-            try:
-                spl = make_interp_spline(s, np.c_[x, y], k=2) # Quadratic
-                s_new = np.linspace(s[0], s[-1], 50)
-                coords = spl(s_new)
-                
-                path = QPainterPath()
-                path.moveTo(coords[0, 0], coords[0, 1])
-                for i in range(1, len(coords)):
-                    path.lineTo(coords[i, 0], coords[i, 1])
-                path_item.setPath(path)
-            except Exception as e:
-                print(f"Arching spline error: {e}")
-
-        draw_spline(self.top_points, self.top_path)
-        draw_spline(self.back_points, self.back_path)
+    def wheelEvent(self, event):
+        f = 1.15 if event.angleDelta().y() > 0 else 1/1.15
+        if 0.5 < self.current_zoom * f < 10.0:
+            self.current_zoom *= f; self.scale(f, f)

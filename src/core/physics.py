@@ -18,6 +18,7 @@ class AcousticModel:
         self.top_modulus = 12.0
         self.back_density = 600.0
         self.back_modulus = 10.0
+        self.geometry_data = []
 
     def set_material_properties(self, td, tm, bd, bm):
         self.top_density = td
@@ -25,41 +26,57 @@ class AcousticModel:
         self.back_density = bd
         self.back_modulus = bm
 
-    def predict(self, geometry_data: List[Point]) -> List[Dict[str, float]]:
+    def update_geometry(self, points: List[Point]):
+        self.geometry_data = points
+
+    def update_arching(self, top_points: List[Point], back_points: List[Point]):
+        self.arching_data = (top_points, back_points)
+
+    def predict(self, geometry_data: List[Point] = None) -> List[Dict[str, float]]:
         """
         Predicts acoustic modes based on geometry and material properties.
-        Frequency proportional to sqrt(E/rho).
+        A0 (Air) frequency depends on Volume (~Area * Height).
+        B modes depend on stiffness (Height) and weight (Area).
         """
-        c_bout_width = GeometryExtractor.calculate_c_bout_width(geometry_data)
+        if geometry_data is None: geometry_data = self.geometry_data
+        if not geometry_data: return self.base_modes
+            
+        area = GeometryExtractor.calculate_area(geometry_data)
         
-        # Standard reference width (e.g., 100 units)
-        reference_width = 100.0
+        # Get arching height
+        if hasattr(self, 'arching_data'):
+            top_pts, back_pts = self.arching_data
+            h_top = GeometryExtractor.get_max_depth(top_pts)
+            h_back = GeometryExtractor.get_max_depth(back_pts)
+            height = (h_top + h_back) / 2.0
+        else:
+            height = 20.0 # Default
+            
+        # Normalization (based on approx scene coordinates: half-width ~120, height ~400)
+        ref_area = 25000.0 # Approx area for a standard violin half-outline in scene units
+        ref_height = 50.0   # Approx side-view height
         
-        # Geometry Scaling factor
-        geom_factor = reference_width / max(c_bout_width, 1.0)
-        geom_factor = max(0.5, min(geom_factor, 2.0))
+        # Physics Heuristics:
+        # Higher area = lower freq. Higher arch = higher freq.
+        geom_factor = (height / ref_height)**0.7 * (ref_area / area)**0.5
+        geom_factor = max(0.4, min(geom_factor, 2.5))
         
-        # Material Factor: f ~ sqrt(E/rho)
-        # We use a weighted average or simply average the factors for Top and Back
-        ref_density = 450.0
-        ref_modulus = 10.0
-        ref_c = (ref_modulus / ref_density)**0.5
-        
-        # Calculate speed of sound for Top and Back
-        c_top = (self.top_modulus / self.top_density)**0.5
-        c_back = (self.back_modulus / self.back_density)**0.5
-        
-        # Average speed factor (simplified model)
-        current_c = (c_top + c_back) / 2.0
-        
-        material_factor = current_c / ref_c
+        # Material Factor
+        ref_c = (10.0 / 450.0)**0.5
+        c_avg = ((self.top_modulus/self.top_density)**0.5 + (self.back_modulus/self.back_density)**0.5) / 2.0
+        material_factor = c_avg / ref_c
         
         total_scale_factor = geom_factor * material_factor
         
         predicted_modes = []
-        for mode in self.base_modes:
+        # Specific shift for Air Mode (A0) - Volume sensitivity
+        vol_factor = (ref_area * ref_height) / (area * height)
+        a0_shift = vol_factor**0.4
+        
+        for i, mode in enumerate(self.base_modes):
+            shift = a0_shift if i == 0 else total_scale_factor
             predicted_modes.append({
-                'freq': mode['freq'] * total_scale_factor,
+                'freq': mode['freq'] * shift,
                 'amp': mode['amp'],
                 'damping': mode['damping']
             })

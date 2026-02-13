@@ -1,22 +1,27 @@
-from PyQt6.QtWidgets import QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QPushButton, QSlider, QLabel
-from PyQt6.QtCore import Qt
+
+from PyQt6.QtWidgets import QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QPushButton, QSlider, QLabel, QTabWidget
+from PyQt6.QtCore import Qt, QTimer
 from .canvas import Canvas
 from .arching_canvas import ArchingCanvas
 from .controls import Controls
 from ..core.physics import AcousticModel
 from ..core.synthesizer import Synthesizer
+from ..core.plate_generator import PlateGenerator
 
 from .spl_plot import SPLPlot
+from .spectrogram_plot import SpectrogramPlot
+from .plate_plot import PlatePlot
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("AFFOIM - Violin CAD Prototype")
-        self.resize(1400, 800)
+        self.resize(1400, 900) # Increased height
 
         # Core Components
         self.physics = AcousticModel()
         self.synthesizer = Synthesizer()
+        self.plate_generator = PlateGenerator()
         
         # GUI Components
         self.central_widget = QWidget()
@@ -62,17 +67,39 @@ class MainWindow(QMainWindow):
         
         self.main_layout.addWidget(self.center_panel, stretch=2)
         
-        # --- Right Column: Controls, Info & SPL Plot ---
+        # --- Right Column: Controls, Info & Plots ---
         self.right_panel = QWidget()
         self.right_layout = QVBoxLayout(self.right_panel)
         
         self.controls = Controls()
         self.right_layout.addWidget(self.controls)
         
-        # SPL Plot
-        self.spl_plot = SPLPlot()
-        self.right_layout.addWidget(self.spl_plot, stretch=1)
+        # Tabs for Analysis vs Plate Map
+        self.tabs = QTabWidget()
+        self.right_layout.addWidget(self.tabs, stretch=1)
         
+        # Tab 1: Acoustic Analysis
+        self.analysis_tab = QWidget()
+        self.analysis_layout = QVBoxLayout(self.analysis_tab)
+        
+        self.spl_plot = SPLPlot()
+        self.analysis_layout.addWidget(self.spl_plot, stretch=1)
+        
+        self.spectrogram_plot = SpectrogramPlot()
+        self.analysis_layout.addWidget(self.spectrogram_plot, stretch=1)
+        
+        self.tabs.addTab(self.analysis_tab, "Acoustics")
+        
+        # Tab 2: Plate Map
+        self.plate_tab = QWidget()
+        self.plate_layout = QVBoxLayout(self.plate_tab)
+        
+        self.plate_plot = PlatePlot()
+        self.plate_layout.addWidget(self.plate_plot)
+        
+        self.tabs.addTab(self.plate_tab, "Plate Map")
+        
+        # Buttons
         self.load_bg_btn = QPushButton("Load Background Image")
         self.load_bg_btn.clicked.connect(self.canvas.load_background)
         self.right_layout.addWidget(self.load_bg_btn)
@@ -91,21 +118,79 @@ class MainWindow(QMainWindow):
 
         # Wiring
         self.canvas.geometryChanged.connect(self.on_geometry_changed)
+        # We also need to update when arching changes (though arching doesn't emit yet?)
+        # Let's add geometryChanged to ArchingCanvas if not present or connect it.
+        # ArchingCanvas has geometryChanged signal.
+        self.arching_canvas.geometryChanged.connect(self.on_arching_changed)
+        
         self.controls.materialChanged.connect(self.on_material_changed)
         
         # Initial update
         self.canvas.update_geometry()
+        self.arching_canvas.update_geometry() # Ensure this emits
+        
+        # Load Example Images
+        import os
+        base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        outline_img = os.path.join(base_dir, "Baldwin-Violin-Front-Upright.jpg")
+        arching_img = os.path.join(base_dir, "Antonio-Strad-5H-Violin-Right-Side-Upright.jpg")
+        
+        if os.path.exists(outline_img):
+            self.canvas.load_background(outline_img)
+        if os.path.exists(arching_img):
+            self.arching_canvas.load_background(arching_img)
+        
+        # Spectrogram Timer
+        self.spectrogram_timer = QTimer()
+        self.spectrogram_timer.timeout.connect(self.update_spectrogram)
+        self.spectrogram_timer.start(30) # 30ms ~ 33fps
+
+    def update_spectrogram(self):
+        if self.synthesizer.is_running:
+            chunk = self.synthesizer.get_audio_chunk()
+            if chunk is not None:
+                self.spectrogram_plot.update_plot(chunk)
+                
+    def on_arching_changed(self, points):
+        # Notify physics model about arching changes
+        from ..core.geometry import Point
+        top_pts = [Point(p.pos().x(), p.pos().y()) for p in self.arching_canvas.top_points]
+        back_pts = [Point(p.pos().x(), p.pos().y()) for p in self.arching_canvas.back_points]
+        self.physics.update_arching(top_pts, back_pts)
+        
+        # Re-trigger acoustic prediction
+        outline_pts = [Point(p.pos().x(), p.pos().y()) for p in self.canvas.points]
+        self.on_geometry_changed(outline_pts)
+        
+        # Update plate map
+        self.update_plate_map()
+        
+    def update_plate_map(self):
+        from ..core.geometry import Point
+        outline_points = [Point(p.pos().x(), p.pos().y()) for p in self.canvas.points]
+        arch_points = [Point(p.pos().x(), p.pos().y()) for p in self.arching_canvas.top_points]
+        
+        # Generate Mesh
+        X, Y, Z = self.plate_generator.generate_mesh(outline_points, arch_points)
+        
+        # Update Plot
+        self.plate_plot.update_plot(X, Y, Z)
 
     def on_geometry_changed(self, points):
         # 1. Predict modes from geometry
-        modes = self.physics.predict(points)
+        # ... existing logic ...
+        self.physics.update_geometry(points)
+        modes = self.physics.predict()
         
-        # 2. Update synthesizer
+        # 2. Update Synthesizer
         self.synthesizer.update_modes(modes)
         
-        # 3. Update SPL Plot
+        # 3. Update Plots
         freqs, spl = self.physics.calculate_spectrum(modes)
         self.spl_plot.update_plot(freqs, spl)
+        
+        # 4. Update Plate Map
+        self.update_plate_map()
         
     def on_material_changed(self, td, tm, bd, bm):
         # 1. Update physics model

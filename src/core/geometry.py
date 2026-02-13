@@ -34,35 +34,28 @@ class BezierCurve:
 class GeometryExtractor:
     @staticmethod
     def calculate_c_bout_width(points: List[Point]) -> float:
-        """
-        Calculates the width of the C-bouts based on control points.
-        Assumes points are ordered such that specific indices correspond to the C-bout area.
-        For this prototype, we'll assume the C-bout width is roughly determined by the 
-        minimum x-distance between left and right C-bout points relative to the center line.
-        
-        For a simple mock, we can just take the x-coordinate of a specific point that represents
-        the C-bout width (e.g., the narrowest part).
-        """
-        # Mock implementation: 
-        # Assuming points[2] is the inner-most point of the C-bout on one side.
-        # We return its distance from the center (assuming center is x=0 or relative).
-        # If points are absolute, we might look for the point with the smallest width.
-        
-        if not points:
-            return 0.0
-            
-        # Just finding the minimum width (x-coordinate) among points that might represent the waist
-        # This is a simplification for the prototype.
-        # Let's assume the user is drawing the right half of the violin.
-        # The "width" is just the x value.
-        
-        # Find the point with the minimum x value (closest to center axis)
-        # excluding the top and bottom endpoints which might be on the axis.
-        
+        if not points: return 0.0
         min_x = float('inf')
         for p in points:
-             # Filter out points that are likely on the center line (x ~ 0)
-             if p.x > 10: 
-                 min_x = min(min_x, p.x)
-                 
+            if p.x > 10: min_x = min(min_x, p.x)
         return min_x if min_x != float('inf') else 100.0
+
+    @staticmethod
+    def calculate_area(points: List[Point]) -> float:
+        """Calculates area using Shoelace formula for the half-outline."""
+        if len(points) < 3: return 0.0
+        area = 0.0
+        n = len(points)
+        for i in range(n):
+            j = (i + 1) % n
+            area += points[i].x * points[j].y
+            area -= points[j].x * points[i].y
+        return abs(area) / 2.0
+
+    @staticmethod
+    def get_max_depth(points: List[Point]) -> float:
+        """Finds peak depth from arching points."""
+        if not points: return 1.0
+        # In ArchingCanvas, x is the depth axis
+        xs = [p.x for p in points]
+        return max(xs) - min(xs) if xs else 1.0
