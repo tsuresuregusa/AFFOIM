@@ -18,66 +18,74 @@ class VisionProcessor:
             gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
             blurred = cv2.GaussianBlur(gray, (5, 5), 0)
             
-            # Thresholding
-            # Standard Otsu on inverted image (assuming light background)
-            _, thresh = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+            # Thresholding: Try both standard and inverted to be robust to background
+            _, thresh1 = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+            _, thresh2 = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
             
-            # Cleanup
-            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+            # Pick the one with the more "central" mass (heuristic for subject vs background)
+            if np.mean(thresh1[:, img.shape[1]//4:3*img.shape[1]//4]) > np.mean(thresh1):
+                thresh = thresh1
+            else: thresh = thresh2
+            
+            # Cleanup: Stricter for side view to remove neck/scroll
+            k_size = 9 if view_type == 'side' else 5
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (k_size, k_size))
             thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
+            if view_type == 'side':
+                # Morphological opening to explicitly remove thin structures like strings/neck
+                open_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+                thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, open_kernel)
             
-            # Vertical Width Profile (how many foreground pixels in each row)
-            width_profile = np.sum(thresh > 0, axis=1)
+            # Calculate vertical width profile
+            width_profile = np.sum(thresh, axis=1) / 255
             
             # Smooth the profile
-            window = max(11, int(len(width_profile) / 30))
-            if window % 2 == 0: window += 1
-            smooth_profile = np.convolve(width_profile, np.ones(window)/window, mode='same')
+            if len(width_profile) < 50: return None
+            smooth_profile = np.convolve(width_profile, np.ones(31)/31, mode='same')
             
-            # Find the "Body" region
-            # The body is a large contiguous region where width is significantly higher than the neck.
-            # Usually neck/scroll is < 30% of max body width.
             max_w = np.max(smooth_profile)
-            if max_w == 0: return None
+            if max_w < 10: return None
             
-            # We look for the largest contiguous block where width > 40% of max width
-            threshold = 0.40 * max_w
-            is_body = smooth_profile > threshold
+            # Thresholding: The body is bulky. Neck is thin.
+            # Use a threshold that specifically finds the "bulge".
+            is_body = smooth_profile > (0.6 * max_w)
             
-            # Find contiguous regions
             from scipy.ndimage import label
             labels, num_features = label(is_body)
-            
             if num_features == 0: return None
             
-            # Find the region with the most area (integral of width)
-            best_region = -1
-            max_integral = 0
+            # Pick the largest region that is NOT the whole image
+            # Violins in upright photos usually occupy 60-80% of height.
+            regions = []
             for i in range(1, num_features + 1):
-                integral = np.sum(smooth_profile[labels == i])
-                if integral > max_integral:
-                    max_integral = integral
-                    best_region = i
+                y_idx = np.where(labels == i)[0]
+                h_reg = y_idx[-1] - y_idx[0]
+                if h_reg < 50: continue # Too small
+                # Removed max-height check to allow full-frame violin bodies
+                # if h_reg > 0.99 * img.shape[0]: continue 
+                
+                integral = np.sum(smooth_profile[y_idx])
+                regions.append((integral, y_idx[0], y_idx[-1]))
             
-            y_indices = np.where(labels == best_region)[0]
-            y_start, y_end = y_indices[0], y_indices[-1]
+            if not regions: return None
             
-            # Crop height slightly to avoid picking up the very top of the neck if threshold was loose
-            # Usually the body is a bit more compact.
-            h_detected = y_end - y_start
+            # Best region is the one with most mass (Bulge)
+            best_region = max(regions, key=lambda x: x[0])
+            y_start, y_end = best_region[1], best_region[2]
             
-            # Horizontal Bounds in that region
+            # Clip 10% from top/bottom to be safe from curves trailing into neck
+            h_actual = y_end - y_start
+            y_start += int(0.05 * h_actual)
+            y_end -= int(0.05 * h_actual)
+            
+            # Horizontal Bounds
             body_mask = thresh[y_start:y_end, :]
             x_sum = np.sum(body_mask, axis=0)
             x_indices = np.where(x_sum > 0)[0]
-            
-            if len(x_indices) == 0:
-                return (0, y_start, img.shape[1], h_detected)
+            if len(x_indices) < 5: return None
             
             x_start, x_end = x_indices[0], x_indices[-1]
-            
             return (int(x_start), int(y_start), int(x_end - x_start), int(y_end - y_start))
             
         except Exception as e:
-            print(f"VisionProcessor Error: {e}")
             return None

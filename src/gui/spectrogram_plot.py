@@ -9,8 +9,9 @@ class SpectrogramPlot(QWidget):
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(0, 0, 0, 0)
         
-        # Create Matplotlib Figure
-        self.figure = Figure(figsize=(5, 3), dpi=100)
+        # Create Matplotlib Figure with constrained layout
+        # Increased height to 6 (Requested: larger spectrogram)
+        self.figure = Figure(figsize=(5, 6), dpi=100, constrained_layout=True)
         self.canvas = FigureCanvas(self.figure)
         self.layout.addWidget(self.canvas)
         
@@ -41,7 +42,7 @@ class SpectrogramPlot(QWidget):
         self.ax.set_ylim(0, 5000) 
 
 
-    def update_plot(self, audio_chunk):
+    def update_plot(self, audio_chunk, fundamental_freq=None):
         if audio_chunk is None: return
             
         window = np.hanning(len(audio_chunk))

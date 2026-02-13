@@ -41,15 +41,18 @@ class GeometryExtractor:
         return min_x if min_x != float('inf') else 100.0
 
     @staticmethod
-    def calculate_area(points: List[Point]) -> float:
-        """Calculates area using Shoelace formula for the half-outline."""
+    def calculate_area(points: List[Point], center_x: float = 0.0) -> float:
+        """Calculates area using Shoelace formula for the half-outline relative to center_x."""
         if len(points) < 3: return 0.0
         area = 0.0
         n = len(points)
         for i in range(n):
             j = (i + 1) % n
-            area += points[i].x * points[j].y
-            area -= points[j].x * points[i].y
+            # Area relative to the axis of symmetry (center_x)
+            x1 = points[i].x - center_x
+            x2 = points[j].x - center_x
+            area += x1 * points[j].y
+            area -= x2 * points[i].y
         return abs(area) / 2.0
 
     @staticmethod
